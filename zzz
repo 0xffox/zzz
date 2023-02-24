@@ -1,0 +1,199 @@
+#!/bin/bash 
+ 
+if [ "$#" -lt "1" ] ; then 
+	echo "Usage examples:" 
+	echo "  zzz 30 - sleep for 30 seconds" 
+	echo "  zzz 25m - sleep for 25 minutes"
+	echo "  zzz 5d12h30m11s - sleep for 5 days 12 hours 30 minutes and 11 seconds"
+	exit 1 
+fi 
+
+datestamp=$1
+shift;
+
+
+task_name=$*
+times=( 'd' 'h' 'm' 's' )
+muls=( 79800 3600 60 1 )
+((seconds=0))
+elapsed=0
+started_at=$(date -Iseconds)
+
+logProgress(){
+    local task=${task_name:-"<no-task>"}
+    echo "$started_at `printTime $elapsed` $task" >> $HOME/.zzz-history
+    echo ""
+    exit 0
+}
+
+trap 'logProgress' SIGINT
+
+repeat(){
+    local start=0
+    local end=${1:-80}
+    local char="${2:-=}"
+    local message=$3
+    local range=$(seq $start $((end-1)))
+    local cur_char=""
+    for i in $range; do
+        cur_char=${message:i:1}
+        if [[ -z $cur_char ]]; then
+            cur_char=$char
+        fi
+        echo -n "${cur_char}"
+    done
+}
+
+getBar(){
+    local elapsed=$1
+    local seconds=$2
+    local barLen=$3
+    local message=$4
+    local spinner=('\' '|' '/' '-')
+    local spinner_length=${#spinner[@]}
+    local spinner_index=$(( elapsed % spinner_length ))
+    local spinner_char=${spinner[$spinner_index]}
+    local bar_message=""
+    local res=''
+    ((numOfBars=elapsed * barLen/seconds))
+    ((barlenMinusOne=barLen-1))
+
+    if (( numOfBars > barLen - numOfBars )); then
+        bar_message=$(repeat $numOfBars '=' "$message")
+        res="${res}${bar_message}"
+        res="${res}${spinner_char}"
+        res="${res}$(repeat $((barLen-numOfBars-1)) '.')"
+    else
+        bar_message=$(repeat $((barLen-numOfBars-1)) '.' "$message")
+        res="${res}$(repeat $numOfBars '=')"
+        res="${res}${spinner_char}"
+        res="${res}${bar_message}"
+    fi
+    echo ${res:0:$barlenMinusOne}
+}
+
+printInfo(){
+    local elapsed=$1
+    local seconds=$2
+    local totLen=$3
+    local message=$4
+    local barLen=40
+
+    ((numOfBars=elapsed * barLen/seconds))
+    ((barlenMinusOne=barLen-1))
+    ((remain=seconds-elapsed))
+    local elapsed_str=$(printf "%5s elapsed [" $(printTime elapsed))
+    local remain_str=$(printf "] %5s remains\t\t\r" $(printTime $remain))
+    local elapsed_str_len=${#elapsed_str}
+    local remain_str_len=${#remain_str}
+    local bar_str=$(getBar $elapsed $seconds $((totLen-elapsed_str_len-remain_str_len)) "$message")
+    echo "${elapsed_str}${bar_str}${remain_str}"
+}
+
+integerDivision(){
+    local a=$1
+    local b=$2
+    echo $(( (a - (a%b) ) / b ))
+}
+
+printTime(){
+    local seconds=$1
+    local pars=( 0 0 0 0 )
+    local not_zero=""
+    local int_div=0
+    local res=""
+    local num_seconds=1
+    for i in "${!times[@]}"
+    do
+        num_seconds=${muls[$i]}
+        int_div=$(integerDivision $seconds $num_seconds)
+        if (( 0 < int_div )); then
+            not_zero="True"
+        fi
+
+        if [ $not_zero ]; then
+            res=$(printf "${res}%02d${times[$i]}" "${int_div}")
+        fi
+        ((seconds=seconds-int_div*num_seconds))
+    done
+    echo $res
+}
+
+delta2seconds(){
+    local datestamp=$1
+    local res=0
+    local seconds=0
+    for i in "${!times[@]}"
+    do
+        local letter=${times[$i]}
+        local parts=(${datestamp//$letter/ })
+        local first=${parts[0]}
+        if [[ $first =~ ^-?[0-9]+$ ]]    
+        then
+            datestamp=${parts[1]}
+            res=$first
+        else
+            res=0
+        fi
+        local mul=${muls[$i]}
+        ((seconds=10#$seconds+$mul*10#$res))
+    done
+    echo $seconds
+}
+
+seconds=$(delta2seconds $datestamp)
+
+# print stats for amount of days
+declare -A tasks
+declare -a lines
+if [[ $task_name == '--stats' ]]; then
+
+    back=$(date -d "-$seconds seconds" -Iseconds )
+    readarray -t lines < $HOME/.zzz-history
+    for line in "${lines[@]}"; do
+        task_name=$(echo $line| cut -d' ' -f3-)
+        lines[${#lines[@]}]=$line
+        line=($line)
+        task_date=${line[0]}
+        task_duration=$(delta2seconds ${line[1]})
+        if [[ ! "$task_date" < "$back" ]]; then
+            if [[ ${tasks[$task_name]+_} ]]; then
+                task_duration=$((task_duration + tasks[$task_name]))
+                tasks[$task_name]=$task_duration
+            else
+                tasks[$task_name]+=$task_duration
+            fi
+        fi
+    done
+    total=0
+    max_time_len=0
+    declare -A percents
+    for t in "${!tasks[@]}"; do
+        cur_dur=${tasks[$t]}
+        cur_dur_time=$(printTime $cur_dur)
+        total=$(($total+$cur_dur ))
+        tasks[$t]=$cur_dur_time
+        percents[$t]+=$cur_dur
+        cur_dur_time_len=${#cur_dur_time}
+        max_time_len=$(( max_time_len > cur_dur_time_len ? cur_dur_time_len : max_time_len ))
+    done
+    for t in "${!tasks[@]}"; do
+        printf "%5s %%\t%10s\t%s\n" \
+            $(echo "scale=2; 100*${percents[$t]}/$total" | bc) \
+            ${tasks[$t]} \
+            "$t"
+    done
+    exit 0
+fi
+
+while [ $elapsed -lt $seconds ]; do
+    term_width=$(tput cols)
+    text=$(printInfo $elapsed $seconds $term_width "$task_name")
+    echo -n "$text"
+    sleep 1
+    ((elapsed=elapsed+1))
+done
+text=$(printInfo $elapsed $seconds $term_width "$task_name")
+echo -n "$text"
+logProgress
+exit 0
