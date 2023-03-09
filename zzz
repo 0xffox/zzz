@@ -1,20 +1,43 @@
 #!/bin/bash 
- 
-if [ "$#" -lt "1" ] ; then 
-	echo "Usage examples:" 
-	echo "  zzz 30 - sleep for 30 seconds" 
-	echo "  zzz 25m - sleep for 25 minutes"
-	echo "  zzz 5d12h30m11s - sleep for 5 days 12 hours 30 minutes and 11 seconds"
-	exit 1 
-fi 
+app_name='zzz'
+USAGE=$(cat << EOF
+$app_name is better sleep. Also task/time management software
+USAGE:
+    $app_name [TIMEDELTA] [--stats] [TASK_NAME]
+    TIMEDELTA   time interval specifies amount of days(d), hours(h)
+                minutes(m) and seconds(s). Example:
+                2d12h30m30s -   specify interval of 2days 12 hours 
+                                30 minutes and 30 seconds
+                3h30s           3 hour 30 seconds
 
-datestamp=$1
-shift;
+    --stats     display statistic for specified interval instead of 
+                launching a task. If interval is not specified shows
+                all statistics. You can also filter by task tag by 
+                specifiying '+tag_name' to include and '-tag_name' 
+                to exclude particular tag into/from stats result
+                
+
+    TASK_NAME   description of task. Can contain tags, word starting 
+                with symbol +, i.e. +work +home-maintenance. Single
+                + is not tag.
+
+EXAMPLES:
+    $app_name 30s - sleep for 30 seconds
+    $app_name 25m - sleep for 25 minutes
+    $app_name 5d12h30m11s - sleep for 5 days 12 hours 30 minutes and 11 seconds
+    $app_name 20m Answer emails - start task 'Answer email' for 20 minutes
+    $app_name 8h --stats - display task statistics for last 8 hours
+    $app_name --stats +work -call - display task statistics for all time that
+                                    contain +work tag but not containing +call tag
+    $app_name Backend +bug investigation - start task 'Backend +bug investigation'
+                                    without defined deadline with tag +bug
+EOF
+)
 
 
-task_name=$*
+task_name=""
 times=( 'd' 'h' 'm' 's' )
-muls=( 79800 3600 60 1 )
+muls=( 86400 3600 60 1 )
 ((seconds=0))
 elapsed=0
 started_at=$(date -Iseconds)
@@ -55,8 +78,11 @@ getBar(){
     local spinner_char=${spinner[$spinner_index]}
     local bar_message=""
     local res=''
-    ((numOfBars=elapsed * barLen/seconds))
-    ((barlenMinusOne=barLen-1))
+    local numOfBars=0
+    if [[ "$seconds" -gt "0" ]]; then
+        ((numOfBars=elapsed * barLen/seconds))
+    fi
+    ((barlenMinusOne=barLen-4))
 
     if (( numOfBars > barLen - numOfBars )); then
         bar_message=$(repeat $numOfBars '=' "$message")
@@ -69,7 +95,7 @@ getBar(){
         res="${res}${spinner_char}"
         res="${res}${bar_message}"
     fi
-    echo ${res:0:$barlenMinusOne}
+    echo "[${res:0:$barlenMinusOne}]"
 }
 
 printInfo(){
@@ -79,15 +105,17 @@ printInfo(){
     local message=$4
     local barLen=40
 
-    ((numOfBars=elapsed * barLen/seconds))
-    ((barlenMinusOne=barLen-1))
     ((remain=seconds-elapsed))
-    local elapsed_str=$(printf "%5s elapsed [" $(printTime elapsed))
-    local remain_str=$(printf "] %5s remains\t\t\r" $(printTime $remain))
+    local elapsed_str=$(printf "%5s elapsed " $(printTime elapsed))
+    local remain_str=""
+    if [[ "$seconds" -gt "0" ]]; then
+        remain_str=$(printf " %5s remains\t\t" $(printTime $remain))
+    fi
     local elapsed_str_len=${#elapsed_str}
     local remain_str_len=${#remain_str}
     local bar_str=$(getBar $elapsed $seconds $((totLen-elapsed_str_len-remain_str_len)) "$message")
-    echo "${elapsed_str}${bar_str}${remain_str}"
+    local return=$(printf "\r")
+    echo "${elapsed_str}${bar_str}${remain_str}${return}"
 }
 
 integerDivision(){
@@ -141,59 +169,163 @@ delta2seconds(){
     echo $seconds
 }
 
-seconds=$(delta2seconds $datestamp)
+parseArgs(){
+    local task_name="<no-task>"
+    local actions=("def-task", "indef-task", "def-stats", "indef-stats")
+    local action=""
 
-# print stats for amount of days
-declare -A tasks
-declare -a lines
-if [[ $task_name == '--stats' ]]; then
+    local seconds=$(delta2seconds $1)
+    if [[ $# -eq "0" ]]; then
+        action="no-action"
+    else
+        if [[ "$seconds" -gt "0" ]]; then
+            action="def-"
+            shift
+        else
+            action="indef-"
+        fi
 
-    back=$(date -d "-$seconds seconds" -Iseconds )
-    readarray -t lines < $HOME/.zzz-history
-    for line in "${lines[@]}"; do
-        task_name=$(echo $line| cut -d' ' -f3-)
-        lines[${#lines[@]}]=$line
-        line=($line)
-        task_date=${line[0]}
-        task_duration=$(delta2seconds ${line[1]})
-        if [[ ! "$task_date" < "$back" ]]; then
-            if [[ ${tasks[$task_name]+_} ]]; then
-                task_duration=$((task_duration + tasks[$task_name]))
-                tasks[$task_name]=$task_duration
-            else
-                tasks[$task_name]+=$task_duration
-            fi
+        if [[ $1 == '--stats' ]]; then
+            action="${action}stats"
+            shift
+        else
+            action="${action}task"
+        fi
+
+        if [[ $# -gt "0" ]]; then
+            task_name=$*
+        fi
+    fi
+
+    echo "$action $seconds $task_name"
+}
+
+filterTags(){
+    local tag_sign=$1
+    local task_name=($2)
+    local res=()
+
+    for task in ${task_name[@]}; do
+        if [[ "${task:0:${#tag_sign}}" == "$tag_sign" ]]; then
+            res+=("${task:${#tag_sign}}")
         fi
     done
-    total=0
-    max_time_len=0
-    declare -A percents
-    for t in "${!tasks[@]}"; do
-        cur_dur=${tasks[$t]}
-        cur_dur_time=$(printTime $cur_dur)
-        total=$(($total+$cur_dur ))
-        tasks[$t]=$cur_dur_time
-        percents[$t]+=$cur_dur
-        cur_dur_time_len=${#cur_dur_time}
-        max_time_len=$(( max_time_len > cur_dur_time_len ? cur_dur_time_len : max_time_len ))
-    done
-    for t in "${!tasks[@]}"; do
-        printf "%5s %%\t%10s\t%s\n" \
-            $(echo "scale=2; 100*${percents[$t]}/$total" | bc) \
-            ${tasks[$t]} \
-            "$t"
-    done
-    exit 0
-fi
 
-while [ $elapsed -lt $seconds ]; do
-    term_width=$(tput cols)
-    text=$(printInfo $elapsed $seconds $term_width "$task_name")
-    echo -n "$text"
-    sleep 1
-    ((elapsed=elapsed+1))
-done
-text=$(printInfo $elapsed $seconds $term_width "$task_name")
-echo -n "$text"
-logProgress
-exit 0
+    echo "${res[@]}"
+}
+
+array2lines() {
+    local arr=($1)
+    for l in "${arr[@]}"; do
+        echo $l
+    done
+}
+
+appendSignToTags(){
+    local tag_sign=$1
+    local task_name=($2)
+    local res=()
+    
+    for task in ${task_name[@]}; do
+        res+=("${tag_sign}${task}")
+    done
+
+    echo "${res[@]}"
+}
+
+matchTags() {
+    local line=$1
+    local positive_tags=$2
+    local negative_tags=$3
+
+    readarray -t positive_match <                   \
+        <(comm -12                                  \
+            <(array2lines "$line" | sort)           \
+            <(array2lines "$positive_tags" | sort)  \
+         )
+
+    readarray -t negative_match <                   \
+        <(comm -12                                  \
+            <(array2lines "$line" | sort)           \
+            <(array2lines "$negative_tags" | sort)  \
+         )
+
+    
+    if [[ (-z "$positive_tags" && -z "$negative_tags") \
+        || (-z "$positive_tags" && "${#negative_match[@]}" -eq '0') \
+        || ("${#positive_match[@]}" -gt '0' && "${#negative_match[@]}" -eq '0') \
+    ]]; then
+        echo "OK"
+    fi
+}
+
+args=($(parseArgs $*))
+action=${args[0]}
+seconds=${args[1]}
+task_name=${args[@]:2}
+
+case $action in
+    def-stats|indef-stats)
+        declare -A tasks
+        declare -a lines
+        positive_tags=$(appendSignToTags + "`filterTags + "$task_name"`")
+        negative_tags=$(appendSignToTags + "`filterTags - "$task_name"`")
+
+        back=$(date -d "@0" -Iseconds )     # indef-stats
+        if [[ "$seconds" -gt "0" ]]; then   # def-stats
+            back=$(date -d "-$seconds seconds" -Iseconds )
+        fi
+        readarray -t lines < $HOME/.zzz-history
+        for line in "${lines[@]}"; do
+            task=$(echo $line| cut -d' ' -f3-)
+            lines[${#lines[@]}]=$line
+            line=($line)
+            task_date=${line[0]}
+            task_duration=$(delta2seconds ${line[1]})
+            filter=$(matchTags "$task" "$positive_tags" "$negative_tags")
+            if [[ (! "$task_date" < "$back") && ("$filter" == "OK") ]]; then
+                if [[ ${tasks[$task]+_} ]]; then
+                    task_duration=$((task_duration + tasks[$task]))
+                    tasks[$task]=$task_duration
+                else
+                    tasks[$task]+=$task_duration
+                fi
+            fi
+        done
+        total=0
+        max_time_len=0
+        declare -A percents
+        for t in "${!tasks[@]}"; do
+            cur_dur=${tasks[$t]}
+            cur_dur_time=$(printTime $cur_dur)
+            total=$(($total+$cur_dur ))
+            tasks[$t]=$cur_dur_time
+            percents[$t]+=$cur_dur
+            cur_dur_time_len=${#cur_dur_time}
+            max_time_len=$(( max_time_len > cur_dur_time_len ? cur_dur_time_len : max_time_len ))
+        done
+        for t in "${!tasks[@]}"; do
+            printf "%5s %%\t%10s\t%s\n" \
+                $(echo "scale=2; 100*${percents[$t]}/$total" | bc) \
+                ${tasks[$t]} \
+                "$t"
+        done
+        exit 0
+        ;;
+    def-task|indef-task)
+        while [ $elapsed -lt $seconds ] || [ "$seconds" == '0' ]; do
+            term_width=$(tput cols)
+            text=$(printInfo $elapsed $seconds $term_width "$task_name")
+            echo -n "$text"
+            sleep 1
+            ((elapsed=elapsed+1))
+        done
+        text=$(printInfo $elapsed $seconds $term_width "$task_name")
+        echo -n "$text"
+        logProgress
+        exit 0
+        ;;
+    *)
+        echo "$USAGE"
+        ;;
+esac
