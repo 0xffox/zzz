@@ -26,6 +26,28 @@ $ zzz 6h --stats
   .26 %        02s      other
 ```
 
+## Indefinite tasks
+Sometimes you do not know how much the task will take before you start it. You can start such tasks by skipping interval:
+```bash
+$ zzz bug hunting
+12m15s elapsed [-bug hunting.............................................................]
+```
+After you finish this task just ctrl+C and zzz will log the time you've spend on it.
+
+## Tags
+You can add tags to name of your task by placing + sign to the begining of any word of its description: 
+```bash
+$ zzz 20m Answering +email +work
+  56s elapsed [==\.......................................................] 24m04s remains
+```
+Later you can filter statistics by the tag name. For example
+```bash
+$ zzz 6h --stats +work -email
+```
+will tell you statistics on the tasks that have tag +work and do not have tag +email
+
+
+
 # Install
 Copy zzz script inside one of your PATH directories and make it executable.
 
